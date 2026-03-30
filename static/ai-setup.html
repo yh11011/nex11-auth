@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NexAlarm · AI 整合設定</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d0f14; --card: #161a23; --border: #252b38; --input-bg: #1c2130;
+      --blue: #4f8ef7; --text: #e8ecf4; --text-sub: #8892a4; --text-dim: #4a5468;
+      --green: #43d98c; --orange: #f59e0b; --radius: 14px;
+    }
+    body { min-height:100vh; background:var(--bg); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif; color:var(--text); padding:24px 16px; }
+    .wrap { max-width:680px; margin:0 auto; }
+    .back { display:inline-flex; align-items:center; gap:6px; color:var(--text-sub); font-size:14px; text-decoration:none; margin-bottom:24px; }
+    .back:hover { color:var(--text); }
+    .hero { text-align:center; margin-bottom:32px; }
+    .model-badge { display:inline-flex; align-items:center; gap:10px; background:var(--card); border:1px solid var(--border); border-radius:50px; padding:8px 18px; margin-bottom:16px; font-size:22px; }
+    .model-badge span { font-size:16px; font-weight:600; }
+    h1 { font-size:22px; font-weight:700; margin-bottom:8px; }
+    .subtitle { color:var(--text-sub); font-size:14px; }
+    .step-card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:20px; margin-bottom:16px; }
+    .step-header { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+    .step-num { width:28px;height:28px;background:var(--blue);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0; }
+    .step-title { font-size:15px; font-weight:600; }
+    .step-desc { color:var(--text-sub); font-size:13px; line-height:1.6; margin-bottom:12px; }
+    .code-block { background:var(--input-bg); border:1px solid var(--border); border-radius:10px; padding:14px; font-family:'SF Mono','Fira Code',monospace; font-size:12px; color:#a8d8a8; overflow-x:auto; white-space:pre; position:relative; }
+    .copy-btn { display:inline-flex;align-items:center;gap:6px;background:var(--blue);color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;transition:.2s; }
+    .copy-btn:hover { filter:brightness(1.1); }
+    .copy-btn.copied { background:var(--green); }
+    .open-btn { display:flex;align-items:center;justify-content:center;gap:8px;width:100%;background:var(--blue);color:#fff;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:700;cursor:pointer;text-decoration:none;transition:.2s;margin-top:8px; }
+    .open-btn:hover { filter:brightness(1.1); }
+    .tag { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+    .tag.mcp { background:rgba(79,142,247,.15); color:var(--blue); }
+    .tag.action { background:rgba(67,217,140,.15); color:var(--green); }
+    .tag.api { background:rgba(245,158,11,.15); color:var(--orange); }
+    .token-box { background:var(--input-bg); border:1px solid var(--border); border-radius:10px; padding:12px 14px; font-family:monospace; font-size:12px; color:var(--text-sub); word-break:break-all; margin-bottom:10px; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/">← 返回登入</a>
+
+  <div class="hero">
+    <div class="model-badge" id="model-badge">🤖 <span id="model-name">載入中...</span></div>
+    <h1>連接 NexAlarm 到你的 AI</h1>
+    <p class="subtitle">按照以下步驟完成設定，讓 AI 幫你管理鬧鐘</p>
+  </div>
+
+  <div id="setup-content">載入中...</div>
+</div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const MODEL  = params.get('model') || 'claude';
+const TOKEN  = params.get('token') || '';
+const API    = 'https://login.nex11.me';
+
+const MODELS = {
+  claude:     { name:'Claude',    emoji:'🤖', type:'mcp' },
+  chatgpt:    { name:'ChatGPT',   emoji:'💬', type:'action' },
+  gemini:     { name:'Gemini',    emoji:'✨', type:'action' },
+  copilot:    { name:'Copilot',   emoji:'🪟', type:'action' },
+  cursor:     { name:'Cursor',    emoji:'⌨️', type:'mcp' },
+  grok:       { name:'Grok',      emoji:'𝕏', type:'api' },
+  perplexity: { name:'Perplexity',emoji:'🔍', type:'api' },
+  deepseek:   { name:'DeepSeek',  emoji:'🐋', type:'api' },
+  kimi:       { name:'Kimi',      emoji:'🌙', type:'api' },
+  doubao:     { name:'豆包',       emoji:'🫘', type:'api' },
+  qwen:       { name:'通義千問',   emoji:'🔮', type:'api' },
+  wenxin:     { name:'文心一言',   emoji:'🖊️', type:'api' },
+  chatglm:    { name:'智譜清言',   emoji:'🧠', type:'api' },
+};
+
+const m = MODELS[MODEL] || MODELS.claude;
+document.getElementById('model-badge').innerHTML = m.emoji + ' <span>' + m.name + '</span>';
+
+const mcpConfig = JSON.stringify({
+  mcpServers: {
+    nexalarm: {
+      command: "python3",
+      args: ["/path/to/nexalarm_mcp.py"],
+      env: {
+        NEXALARM_TOKEN: TOKEN,
+        NEXALARM_API: API
+      }
+    }
+  }
+}, null, 2);
+
+const openApiUrl = API + '/openapi.json';
+const docsUrl    = API + '/docs';
+
+function copyText(text, btnId) {
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById(btnId);
+    btn.textContent = '✓ 已複製';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '複製'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+function step(num, title, desc, content) {
+  return `<div class="step-card">
+    <div class="step-header">
+      <div class="step-num">${num}</div>
+      <div class="step-title">${title}</div>
+    </div>
+    <div class="step-desc">${desc}</div>
+    ${content}
+  </div>`;
+}
+
+function tokenStep() {
+  return step(1, '你的 API Token',
+    '這是你的身份驗證 Token，已自動填入設定中，請妥善保管。',
+    `<div class="token-box">${TOKEN || '（請先登入取得 Token）'}</div>
+     <div class="row">
+       <button class="copy-btn" id="copy-token" onclick="copyText('${TOKEN}','copy-token')">複製 Token</button>
+     </div>`
+  );
+}
+
+const SETUPS = {
+  mcp: (modelName, downloadUrl, desktopConfigKey) => `
+    ${tokenStep()}
+    ${step(2, '下載 MCP Server 腳本',
+      '下載後放到你電腦上方便的位置（例如 ~/nexalarm_mcp.py）。',
+      `<div class="row">
+         <a class="copy-btn" href="${API}/nexalarm_mcp.py" download="nexalarm_mcp.py">⬇ 下載 nexalarm_mcp.py</a>
+       </div>`
+    )}
+    ${step(3, '安裝依賴套件',
+      '在終端機執行：',
+      `<div class="code-block">pip install mcp httpx</div>`
+    )}
+    ${step(4, '加入 ${modelName} 設定',
+      '將以下設定貼入你的 ${modelName} 設定檔（${desktopConfigKey}）：',
+      `<div class="code-block" id="mcp-config">${mcpConfig.replace('/path/to/nexalarm_mcp.py', '~/nexalarm_mcp.py')}</div>
+       <div class="row" style="margin-top:10px">
+         <button class="copy-btn" id="copy-mcp" onclick="copyText(document.getElementById('mcp-config').textContent,'copy-mcp')">複製設定</button>
+       </div>`
+    )}
+    ${step(5, '重新啟動 ${modelName}',
+      '設定完成後重新啟動 ${modelName}，就可以說「幫我新增明天7點的鬧鐘」！',
+      ``
+    )}
+  `,
+
+  action: (modelName, builderUrl, hint) => `
+    ${tokenStep()}
+    ${step(2, '打開 ${modelName} 的 Custom Action 設定',
+      hint,
+      `<a class="open-btn" href="${builderUrl}" target="_blank" rel="noopener">打開 ${modelName} 設定頁面 ↗</a>`
+    )}
+    ${step(3, '填入 API 規格 URL',
+      '在 Action 設定中選擇「從 URL 匯入」，貼入以下網址：',
+      `<div class="code-block">${openApiUrl}</div>
+       <div class="row" style="margin-top:10px">
+         <button class="copy-btn" id="copy-api-url" onclick="copyText('${openApiUrl}','copy-api-url')">複製 URL</button>
+         <a class="copy-btn" href="${docsUrl}" target="_blank" style="text-decoration:none">查看 API 文件</a>
+       </div>`
+    )}
+    ${step(4, '填入 Authentication',
+      '認證方式選 Bearer Token，貼入你的 Token：',
+      `<div class="row">
+         <button class="copy-btn" id="copy-token2" onclick="copyText('${TOKEN}','copy-token2')">複製 Token</button>
+       </div>`
+    )}
+  `,
+
+  api: (modelName, apiDocsHint) => `
+    ${tokenStep()}
+    ${step(2, '使用 Function Calling / Tool Use',
+      `${modelName} 支援 Function Calling，你可以在呼叫 API 時加入以下工具定義：`,
+      `<div class="code-block">${JSON.stringify({
+        name: "manage_nexalarm",
+        description: "管理 NexAlarm 鬧鐘（列出/新增/更新/刪除）",
+        parameters: {
+          type: "object",
+          properties: {
+            action:     { type: "string", enum: ["list","create","update","delete","toggle"] },
+            title:      { type: "string" },
+            hour:       { type: "integer" },
+            minute:     { type: "integer" },
+            client_id:  { type: "string" },
+            repeat_days:{ type: "array", items: { type: "integer" } }
+          },
+          required: ["action"]
+        }
+      }, null, 2)}</div>
+       <div class="row" style="margin-top:10px">
+         <a class="copy-btn" href="${docsUrl}" target="_blank" style="text-decoration:none">查看完整 API 文件 ↗</a>
+       </div>`
+    )}
+    ${step(3, 'API Base URL & Token',
+      '在你的程式碼中設定：',
+      `<div class="code-block">Base URL: ${API}\nAuthorization: Bearer ${TOKEN || 'YOUR_TOKEN'}</div>
+       <div class="row" style="margin-top:10px">
+         <button class="copy-btn" id="copy-base" onclick="copyText('${API}','copy-base')">複製 Base URL</button>
+       </div>`
+    )}
+  `
+};
+
+const configs = {
+  claude:     () => SETUPS.mcp('Claude', '', '~/.claude/claude_desktop_config.json 或 Claude Desktop 設定'),
+  cursor:     () => SETUPS.mcp('Cursor', '', '~/.cursor/mcp.json'),
+  chatgpt:    () => SETUPS.action('ChatGPT', 'https://chat.openai.com/gpts/builder', '點擊「建立 GPT」→「Configure」→「Add Action」'),
+  gemini:     () => SETUPS.action('Gemini', 'https://gemini.google.com/gems/create', '在 Gem 設定中加入自訂工具，填入 API 規格'),
+  copilot:    () => SETUPS.action('Microsoft Copilot', 'https://copilot.microsoft.com', '在 Copilot Studio 新增 Plugin'),
+  grok:       () => SETUPS.api('Grok', ''),
+  perplexity: () => SETUPS.api('Perplexity', ''),
+  deepseek:   () => SETUPS.api('DeepSeek', ''),
+  kimi:       () => SETUPS.api('Kimi', ''),
+  doubao:     () => SETUPS.api('豆包', ''),
+  qwen:       () => SETUPS.api('通義千問', ''),
+  wenxin:     () => SETUPS.api('文心一言', ''),
+  chatglm:    () => SETUPS.api('智譜清言', ''),
+};
+
+document.getElementById('setup-content').innerHTML = (configs[MODEL] || configs.claude)();
+</script>
+</body>
+</html>

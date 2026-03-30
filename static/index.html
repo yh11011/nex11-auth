@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nex11 · 登入</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d0f14;
+      --card: #161a23;
+      --border: #252b38;
+      --input-bg: #1c2130;
+      --blue: #4f8ef7;
+      --blue-hover: #3a7af4;
+      --text: #e8ecf4;
+      --text-sub: #8892a4;
+      --text-dim: #4a5468;
+      --danger: #f25f5c;
+      --success: #43d98c;
+      --github: #24292f;
+      --google: #fff;
+      --radius: 14px;
+    }
+
+    body {
+      min-height: 100vh;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      padding: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* animated bg blobs */
+    body::before, body::after {
+      content: '';
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.15;
+      pointer-events: none;
+    }
+    body::before {
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, #4f8ef7, transparent 70%);
+      top: -150px; left: -100px;
+      animation: float1 12s ease-in-out infinite;
+    }
+    body::after {
+      width: 400px; height: 400px;
+      background: radial-gradient(circle, #7c3aed, transparent 70%);
+      bottom: -100px; right: -80px;
+      animation: float2 15s ease-in-out infinite;
+    }
+    @keyframes float1 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(40px,30px)} }
+    @keyframes float2 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(-30px,-20px)} }
+
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 40px 36px;
+      position: relative;
+      z-index: 1;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.4);
+      animation: fadeUp .4s ease;
+    }
+    @keyframes fadeUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      justify-content: center;
+      margin-bottom: 28px;
+    }
+    .logo-icon {
+      width: 38px; height: 38px;
+      background: linear-gradient(135deg, var(--blue), #7c3aed);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; font-weight: 800; color: #fff;
+      letter-spacing: -1px;
+    }
+    .logo-text { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: -.5px; }
+
+    /* tab switcher */
+    .tabs {
+      display: flex;
+      background: var(--input-bg);
+      border-radius: 10px;
+      padding: 4px;
+      margin-bottom: 24px;
+      gap: 4px;
+    }
+    .tab {
+      flex: 1;
+      padding: 8px 0;
+      text-align: center;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-sub);
+      border-radius: 7px;
+      cursor: pointer;
+      transition: all .2s;
+      border: none;
+      background: transparent;
+    }
+    .tab.active {
+      background: var(--card);
+      color: var(--text);
+      font-weight: 600;
+      box-shadow: 0 1px 4px rgba(0,0,0,.3);
+    }
+
+    /* oauth buttons */
+    .oauth-row { display: flex; gap: 10px; margin-bottom: 18px; }
+    .oauth-btn {
+      flex: 1;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 10px 0;
+      border-radius: 10px;
+      font-size: 14px; font-weight: 500;
+      cursor: pointer;
+      transition: all .2s;
+      border: none;
+      text-decoration: none;
+    }
+    .oauth-btn svg { width: 18px; height: 18px; flex-shrink: 0; }
+    .oauth-btn.github {
+      background: var(--github);
+      color: #fff;
+      border: 1px solid #373e47;
+    }
+    .oauth-btn.github:hover { background: #2d333b; }
+    .oauth-btn.google {
+      background: var(--google);
+      color: #1f2937;
+      border: 1px solid #d1d5db;
+    }
+    .oauth-btn.google:hover { background: #f3f4f6; }
+
+    .divider {
+      display: flex; align-items: center; gap: 12px;
+      margin-bottom: 18px;
+      color: var(--text-dim); font-size: 13px;
+    }
+    .divider::before, .divider::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+
+    /* form */
+    .field { margin-bottom: 14px; }
+    label { display: block; font-size: 13px; font-weight: 500; color: var(--text-sub); margin-bottom: 6px; }
+    input[type=text], input[type=email], input[type=password] {
+      width: 100%;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 11px 14px;
+      font-size: 14px;
+      color: var(--text);
+      outline: none;
+      transition: border-color .2s;
+    }
+    input:focus { border-color: var(--blue); }
+    input::placeholder { color: var(--text-dim); }
+
+    .submit-btn {
+      width: 100%;
+      padding: 12px;
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .2s;
+      margin-top: 6px;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+    .submit-btn:hover { background: var(--blue-hover); }
+    .submit-btn:disabled { opacity: .6; cursor: not-allowed; }
+
+    .msg {
+      margin-top: 14px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      display: none;
+    }
+    .msg.error { background: rgba(242,95,92,.12); color: var(--danger); border: 1px solid rgba(242,95,92,.25); display: block; }
+    .msg.success { background: rgba(67,217,140,.12); color: var(--success); border: 1px solid rgba(67,217,140,.25); display: block; }
+
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+      display: none;
+    }
+    @keyframes spin { to{transform:rotate(360deg)} }
+
+    /* panel visibility */
+    .panel { display: none; }
+    .panel.active { display: block; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <div class="logo-icon">N</div>
+    <span class="logo-text">Nex11</span>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" id="tab-login" onclick="switchTab('login')">登入</button>
+    <button class="tab" id="tab-register" onclick="switchTab('register')">註冊</button>
+  </div>
+
+  <!-- OAuth -->
+  <div class="oauth-row">
+    <button class="oauth-btn github" onclick="oauthLogin('github')">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+      GitHub
+    </button>
+    <button class="oauth-btn google" onclick="oauthLogin('google')">
+      <svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+      Google
+    </button>
+  </div>
+
+  <div class="divider">或使用帳號</div>
+
+  <!-- Login panel -->
+  <div class="panel active" id="panel-login">
+    <div class="field">
+      <label>帳號 / Email</label>
+      <input type="text" id="login-id" placeholder="輸入帳號或 Email" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>密碼</label>
+      <input type="password" id="login-pw" placeholder="輸入密碼" autocomplete="current-password">
+    </div>
+    <button class="submit-btn" id="login-btn" onclick="doLogin()">
+      <div class="spinner" id="login-spin"></div>
+      <span id="login-btn-text">登入</span>
+    </button>
+    <div class="msg" id="login-msg"></div>
+  </div>
+
+  <!-- Register panel -->
+  <div class="panel" id="panel-register">
+    <div class="field">
+      <label>帳號 <span style="color:var(--text-dim);font-weight:400">（2–30 字，不含 @）</span></label>
+      <input type="text" id="reg-user" placeholder="設定你的帳號名稱" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Email <span style="color:var(--text-dim);font-weight:400">（選填）</span></label>
+      <input type="email" id="reg-email" placeholder="example@mail.com" autocomplete="email">
+    </div>
+    <div class="field">
+      <label>顯示名稱 <span style="color:var(--text-dim);font-weight:400">（選填）</span></label>
+      <input type="text" id="reg-name" placeholder="顯示給其他人看的名稱">
+    </div>
+    <div class="field">
+      <label>密碼 <span style="color:var(--text-dim);font-weight:400">（至少 8 字）</span></label>
+      <input type="password" id="reg-pw" placeholder="設定密碼" autocomplete="new-password">
+    </div>
+    <button class="submit-btn" id="reg-btn" onclick="doRegister()">
+      <div class="spinner" id="reg-spin"></div>
+      <span id="reg-btn-text">建立帳號</span>
+    </button>
+    <div class="msg" id="reg-msg"></div>
+  </div>
+</div>
+
+<script>
+const API = '';  // same origin
+const params = new URLSearchParams(location.search);
+const nextUrl = params.get('next') || '';
+
+// ── handle OAuth callback token in URL ──
+const tokenParam = params.get('token');
+if (tokenParam) {
+  localStorage.setItem('nex11_token', tokenParam);
+  const user = params.get('user');
+  if (user) try { localStorage.setItem('nex11_user', decodeURIComponent(user)); } catch(e){}
+  redirect(tokenParam);
+}
+
+function redirect(token) {
+  if (nextUrl && (nextUrl.startsWith('https://') || nextUrl.startsWith('/'))) {
+    const sep = nextUrl.includes('?') ? '&' : '?';
+    window.location.href = nextUrl + sep + 'token=' + encodeURIComponent(token);
+  } else {
+    window.location.href = 'https://nex11.me';
+  }
+}
+
+function switchTab(t) {
+  document.getElementById('tab-login').classList.toggle('active', t === 'login');
+  document.getElementById('tab-register').classList.toggle('active', t === 'register');
+  document.getElementById('panel-login').classList.toggle('active', t === 'login');
+  document.getElementById('panel-register').classList.toggle('active', t === 'register');
+}
+
+function setLoading(prefix, on) {
+  document.getElementById(prefix + '-btn').disabled = on;
+  document.getElementById(prefix + '-spin').style.display = on ? 'block' : 'none';
+  document.getElementById(prefix + '-btn-text').textContent = on
+    ? (prefix === 'login' ? '登入中...' : '建立中...')
+    : (prefix === 'login' ? '登入' : '建立帳號');
+}
+
+function showMsg(id, text, type) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'msg ' + type;
+}
+
+async function doLogin() {
+  const id = document.getElementById('login-id').value.trim();
+  const pw = document.getElementById('login-pw').value;
+  if (!id || !pw) return showMsg('login-msg', '請填寫所有欄位', 'error');
+  setLoading('login', true);
+  try {
+    const r = await fetch(API + '/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username_or_email: id, password: pw})
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || '登入失敗');
+    localStorage.setItem('nex11_token', data.access_token);
+    localStorage.setItem('nex11_user', JSON.stringify(data.user));
+    showMsg('login-msg', '登入成功，跳轉中...', 'success');
+    setTimeout(() => redirect(data.access_token), 600);
+  } catch(e) {
+    showMsg('login-msg', e.message, 'error');
+  } finally {
+    setLoading('login', false);
+  }
+}
+
+async function doRegister() {
+  const user = document.getElementById('reg-user').value.trim();
+  const email = document.getElementById('reg-email').value.trim();
+  const name = document.getElementById('reg-name').value.trim();
+  const pw = document.getElementById('reg-pw').value;
+  if (!user) return showMsg('reg-msg', '請輸入帳號名稱', 'error');
+  if (!pw) return showMsg('reg-msg', '請輸入密碼', 'error');
+  if (pw.length < 8) return showMsg('reg-msg', '密碼至少需要 8 個字元', 'error');
+  setLoading('reg', true);
+  try {
+    const payload = {username_or_email: user, password: pw};
+    if (name) payload.display_name = name;
+    const r = await fetch(API + '/register', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || '註冊失敗');
+    // also save email separately if provided (optional enhancement)
+    localStorage.setItem('nex11_token', data.access_token);
+    localStorage.setItem('nex11_user', JSON.stringify(data.user));
+    showMsg('reg-msg', '帳號建立成功，跳轉中...', 'success');
+    setTimeout(() => redirect(data.access_token), 600);
+  } catch(e) {
+    showMsg('reg-msg', e.message, 'error');
+  } finally {
+    setLoading('reg', false);
+  }
+}
+
+function oauthLogin(provider) {
+  const next = nextUrl ? '&next=' + encodeURIComponent(nextUrl) : '';
+  window.location.href = API + '/auth/' + provider + '?origin=' + encodeURIComponent(location.origin) + next;
+}
+
+// Enter key support
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const loginActive = document.getElementById('panel-login').classList.contains('active');
+  if (loginActive) doLogin(); else doRegister();
+});
+</script>
+</body>
+</html>

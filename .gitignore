@@ -1,0 +1,8 @@
+.env
+auth.db
+*.db
+keys/
+__pycache__/
+*.pyc
+.venv/
+=*
