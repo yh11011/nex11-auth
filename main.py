@@ -79,6 +79,7 @@ def _user_to_dict(row) -> dict:
         "email": row["email"],
         "display_name": row["display_name"],
         "created_at": row["created_at"],
+        "is_premium": bool(row["is_premium"]) if "is_premium" in row.keys() else False,
     }
 
 
@@ -127,6 +128,36 @@ async def validate_promo(req: PromoRequest):
     if req.code.strip().lower() in PROMO_CODES:
         return {"valid": True}
     raise HTTPException(400, "Invalid promo code")
+
+
+@app.post("/promo/redeem")
+async def redeem_promo(req: PromoRequest, authorization: str = Header(None)):
+    """驗證優惠碼並將帳號升級為 Premium（需登入）"""
+    user_id = _require_auth(authorization)
+    if not req.code.strip():
+        raise HTTPException(400, "code is required")
+    if req.code.strip().lower() not in PROMO_CODES:
+        raise HTTPException(400, "Invalid promo code")
+    db = await get_db()
+    try:
+        await db.execute("UPDATE users SET is_premium = 1 WHERE id = ?", (user_id,))
+        await db.commit()
+        return {"success": True, "is_premium": True}
+    finally:
+        await db.close()
+
+
+@app.post("/premium/activate")
+async def activate_premium(authorization: str = Header(None)):
+    """將帳號標記為 Premium（Google Play 購買後呼叫，需登入）"""
+    user_id = _require_auth(authorization)
+    db = await get_db()
+    try:
+        await db.execute("UPDATE users SET is_premium = 1 WHERE id = ?", (user_id,))
+        await db.commit()
+        return {"success": True, "is_premium": True}
+    finally:
+        await db.close()
 
 
 @app.post("/register", response_model=TokenResponse)
@@ -273,10 +304,23 @@ class AlarmSyncRequest(BaseModel):
     alarms: list[AlarmSyncItem]
 
 
+async def _require_premium(user_id: int):
+    """確認使用者為 Premium，否則拋 403"""
+    db = await get_db()
+    try:
+        async with db.execute("SELECT is_premium FROM users WHERE id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+        if not row or not row["is_premium"]:
+            raise HTTPException(403, "Cloud sync is a Premium feature. Please upgrade to continue.")
+    finally:
+        await db.close()
+
+
 @app.get("/alarms")
 async def get_alarms(authorization: str = Header(None)):
-    """取得使用者所有未刪除的鬧鐘"""
+    """取得使用者所有未刪除的鬧鐘（Premium 限定）"""
     user_id = _require_auth(authorization)
+    await _require_premium(user_id)
     db = await get_db()
     try:
         async with db.execute(
@@ -295,12 +339,13 @@ async def get_alarms(authorization: str = Header(None)):
 @app.post("/alarms/sync")
 async def sync_alarms(req: AlarmSyncRequest, authorization: str = Header(None)):
     """
-    雙向同步：last-write-wins（依 updated_at 時間戳記決定）
+    雙向同步：last-write-wins（依 updated_at 時間戳記決定）（Premium 限定）
     - 收到客戶端鬧鐘：若比伺服器版本新 → 更新伺服器
     - 回傳伺服器上全部鬧鐘（包含軟刪除）供客戶端應用
     """
     import json
     user_id = _require_auth(authorization)
+    await _require_premium(user_id)
     db = await get_db()
     try:
         for item in req.alarms:

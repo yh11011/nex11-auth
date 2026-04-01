@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS users (
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     oauth_provider TEXT,
     oauth_id       TEXT,
+    is_premium     INTEGER NOT NULL DEFAULT 0,
     CHECK (username IS NOT NULL OR email IS NOT NULL)
 );
 
@@ -48,8 +49,12 @@ async def get_db() -> aiosqlite.Connection:
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(CREATE_SQL)
-        # 遷移：為舊版 DB 補上 OAuth 欄位（若不存在）
-        for col, definition in [("oauth_provider", "TEXT"), ("oauth_id", "TEXT")]:
+        # 遷移：為舊版 DB 補上欄位（若不存在）
+        for col, definition in [
+            ("oauth_provider", "TEXT"),
+            ("oauth_id", "TEXT"),
+            ("is_premium", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
             try:
                 await db.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
                 await db.commit()
