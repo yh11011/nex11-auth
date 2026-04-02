@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexAlarm 授權</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f3f4f6;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 36px 32px;
+      max-width: 420px;
+      width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,.10);
+    }
+    .logo-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .logo-row img {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      object-fit: contain;
+    }
+    h1 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: #111827;
+      line-height: 1.4;
+    }
+    .client-name { color: #4f46e5; }
+    .scope-box {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin: 18px 0;
+      font-size: .9rem;
+      color: #374151;
+    }
+    .scope-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+    }
+    .scope-icon { color: #10b981; font-weight: bold; }
+    .divider { border: none; border-top: 1px solid #e5e7eb; margin: 20px 0; }
+    label {
+      display: block;
+      font-size: .85rem;
+      color: #6b7280;
+      margin-bottom: 4px;
+    }
+    input {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-size: .95rem;
+      margin-bottom: 12px;
+      outline: none;
+      transition: border-color .15s;
+    }
+    input:focus { border-color: #4f46e5; }
+    .logged-in-bar {
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: .9rem;
+      color: #065f46;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .15s;
+    }
+    .btn:active { opacity: .85; }
+    .btn-allow {
+      background: #4f46e5;
+      color: #fff;
+      margin-bottom: 10px;
+    }
+    .btn-deny {
+      background: #f3f4f6;
+      color: #374151;
+    }
+    .error-msg {
+      color: #dc2626;
+      font-size: .88rem;
+      margin: 8px 0;
+      min-height: 1.2em;
+    }
+    .loading { opacity: .6; pointer-events: none; }
+    .footer-note {
+      text-align: center;
+      font-size: .78rem;
+      color: #9ca3af;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo-row">
+    <img src="/static/logo.png" alt="NexAlarm" onerror="this.style.display='none'">
+    <div>
+      <div style="font-size:.75rem;color:#9ca3af;margin-bottom:2px">NexAlarm 授權請求</div>
+      <h1><span class="client-name" id="clientName">__CLIENT_NAME__</span><br>想要存取你的鬧鐘</h1>
+    </div>
+  </div>
+
+  <div class="scope-box" id="scopeBox"></div>
+
+  <hr class="divider">
+
+  <!-- Logged-in indicator (hidden until verified) -->
+  <div class="logged-in-bar" id="loggedInBar" style="display:none">
+    <span>✓</span>
+    <span id="loggedInText">已登入</span>
+  </div>
+
+  <!-- Login form (shown when not logged in) -->
+  <div id="loginForm">
+    <label for="username">帳號或 Email</label>
+    <input type="text" id="username" autocomplete="username" placeholder="輸入帳號或 Email">
+    <label for="password">密碼</label>
+    <input type="password" id="password" autocomplete="current-password" placeholder="輸入密碼">
+    <div class="error-msg" id="loginError"></div>
+  </div>
+
+  <button class="btn btn-allow" id="btnAllow" onclick="handleAllow()">允許存取</button>
+  <button class="btn btn-deny"  onclick="handleDeny()">拒絕</button>
+  <div class="error-msg" id="globalError"></div>
+
+  <div class="footer-note">授權後，該應用程式可依上方範圍存取你的 NexAlarm 鬧鐘。</div>
+</div>
+
+<script>
+// ─── Injected server-side values ───────────────────────────────────────────
+const CLIENT_ID    = "__CLIENT_ID__";
+const CLIENT_NAME  = "__CLIENT_NAME__";
+const REDIRECT_URI = decodeURIComponent("__REDIRECT_URI_ENCODED__");
+const SCOPE        = "__SCOPE__";
+const STATE        = decodeURIComponent("__STATE_ENCODED__");
+const CODE_CHALLENGE        = "__CODE_CHALLENGE__";
+const CODE_CHALLENGE_METHOD = "__CODE_CHALLENGE_METHOD__";
+
+// ─── Scope display ─────────────────────────────────────────────────────────
+const SCOPE_LABELS = {
+  "alarm:read":  "讀取你的鬧鐘清單",
+  "alarm:write": "新增、修改、刪除你的鬧鐘",
+};
+const scopeBox = document.getElementById("scopeBox");
+SCOPE.split(" ").filter(Boolean).forEach(s => {
+  const div = document.createElement("div");
+  div.className = "scope-item";
+  div.innerHTML = `<span class="scope-icon">✓</span><span>${SCOPE_LABELS[s] || s}</span>`;
+  scopeBox.appendChild(div);
+});
+
+// ─── Check existing login ──────────────────────────────────────────────────
+let userToken = null;
+
+(async () => {
+  const stored = localStorage.getItem("nexalarm_token");
+  if (!stored) return;
+  try {
+    const r = await fetch("/me", { headers: { Authorization: "Bearer " + stored } });
+    if (!r.ok) return;
+    const u = await r.json();
+    userToken = stored;
+    document.getElementById("loginForm").style.display = "none";
+    const bar = document.getElementById("loggedInBar");
+    bar.style.display = "flex";
+    document.getElementById("loggedInText").textContent =
+      "已登入為：" + (u.display_name || u.username || u.email || "使用者");
+  } catch (_) {}
+})();
+
+// ─── Allow ────────────────────────────────────────────────────────────────
+async function handleAllow() {
+  const btn = document.getElementById("btnAllow");
+  btn.classList.add("loading");
+  btn.textContent = "處理中...";
+  document.getElementById("globalError").textContent = "";
+
+  // Login if not already
+  if (!userToken) {
+    const username = document.getElementById("username").value.trim();
+    const password = document.getElementById("password").value;
+    document.getElementById("loginError").textContent = "";
+    if (!username || !password) {
+      document.getElementById("loginError").textContent = "請輸入帳號和密碼";
+      resetBtn(); return;
+    }
+    try {
+      const r = await fetch("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username_or_email: username, password }),
+      });
+      if (!r.ok) {
+        document.getElementById("loginError").textContent = "登入失敗，請確認帳號密碼";
+        resetBtn(); return;
+      }
+      const d = await r.json();
+      userToken = d.access_token;
+      localStorage.setItem("nexalarm_token", userToken);
+    } catch (_) {
+      document.getElementById("loginError").textContent = "網路錯誤，請稍後再試";
+      resetBtn(); return;
+    }
+  }
+
+  // Confirm authorization
+  try {
+    const r = await fetch("/oauth/authorize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id:             CLIENT_ID,
+        redirect_uri:          encodeURIComponent(REDIRECT_URI),
+        scope:                 SCOPE,
+        state:                 encodeURIComponent(STATE),
+        code_challenge:        CODE_CHALLENGE   || null,
+        code_challenge_method: CODE_CHALLENGE_METHOD || null,
+        token:                 userToken,
+      }),
+    });
+    const d = await r.json();
+    if (d.redirect_url) {
+      location.href = d.redirect_url;
+    } else {
+      document.getElementById("globalError").textContent =
+        d.detail || "發生未知錯誤，請重試";
+      resetBtn();
+    }
+  } catch (_) {
+    document.getElementById("globalError").textContent = "網路錯誤，請稍後再試";
+    resetBtn();
+  }
+}
+
+// ─── Deny ─────────────────────────────────────────────────────────────────
+function handleDeny() {
+  location.href =
+    REDIRECT_URI +
+    "?error=access_denied" +
+    "&state=" + encodeURIComponent(STATE);
+}
+
+function resetBtn() {
+  const btn = document.getElementById("btnAllow");
+  btn.classList.remove("loading");
+  btn.textContent = "允許存取";
+}
+</script>
+</body>
+</html>

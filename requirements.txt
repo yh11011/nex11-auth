@@ -6,3 +6,7 @@ python-jose[cryptography]>=3.3
 python-dotenv>=1.0
 httpx>=0.27
 mcp>=1.0
+openai>=1.30
+anthropic>=0.25
+google-generativeai>=0.8
+cryptography>=42.0

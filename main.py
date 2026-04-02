@@ -6,9 +6,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Header, Query
+from fastapi import FastAPI, HTTPException, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from argon2 import PasswordHasher
@@ -16,6 +16,9 @@ from argon2.exceptions import VerifyMismatchError
 
 from database import init_db, get_db
 from jwt_utils import encode_token, decode_token
+import rate_limiter as rl
+from api_v1 import router as api_v1_router
+from oauth_routes import router as oauth_router
 
 # OAuth credentials (set in .env)
 GITHUB_CLIENT_ID     = os.environ.get("GITHUB_CLIENT_ID", "")
@@ -36,13 +39,23 @@ PROMO_CODES: set[str] = {
     if c.strip()
 }
 
-CORS_ORIGINS = [o.strip() for o in os.environ.get("AUTH_CORS_ORIGINS", ",".join([
+# AI 服務必須允許（OAuth consent flow）
+_AI_CORS_ORIGINS = [
+    "https://alarm.nex11.me",
+    "https://login.nex11.me",
+    "https://chatgpt.com",
+    "https://claude.ai",
+]
+
+_env_origins = [o.strip() for o in os.environ.get("AUTH_CORS_ORIGINS", ",".join([
     "http://localhost:5000",
     "http://localhost:5001",
     "http://localhost:5173",
     "https://cybersecurity.nex11.me",
     "https://yh11011.github.io",
 ])).split(",") if o.strip()]
+
+CORS_ORIGINS = list(dict.fromkeys(_env_origins + _AI_CORS_ORIGINS))  # deduplicated, ordered
 
 
 @asynccontextmanager
@@ -51,16 +64,70 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Nex11 Auth Service", lifespan=lifespan)
+app = FastAPI(
+    title="NexAlarm API",
+    description="REST API for NexAlarm — alarm management with OAuth 2.0 support",
+    version="1.0.0",
+    lifespan=lifespan,
+    # Hide internal error details in production
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
+# ─── CORS（必須在其他 middleware 之前）────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+# ─── Security middleware ──────────────────────────────────────────────────────
+_MAX_BODY = 10 * 1024  # 10 KB
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    ip = (request.client.host if request.client else "unknown")
+
+    # 1. IP block check (after repeated 401/403)
+    if rl.is_ip_blocked(ip):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many failed requests. Please try again later."},
+            headers={"Retry-After": "900", "X-Content-Type-Options": "nosniff"},
+        )
+
+    # 2. Request body size guard (Content-Length header)
+    cl = request.headers.get("content-length")
+    if cl and int(cl) > _MAX_BODY:
+        return JSONResponse(
+            status_code=413,
+            content={"detail": "Request body too large (max 10 KB)"},
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
+
+    response = await call_next(request)
+
+    # 3. Track consecutive auth failures for IP blocking
+    if response.status_code in (401, 403):
+        rl.record_auth_error(ip)
+    elif response.status_code < 400:
+        rl.clear_auth_errors(ip)
+
+    # 4. Security headers on every response
+    response.headers["X-Content-Type-Options"]  = "nosniff"
+    response.headers["X-Frame-Options"]         = "DENY"
+    response.headers["Referrer-Policy"]         = "strict-origin-when-cross-origin"
+
+    return response
+
+
+# ─── Include routers ──────────────────────────────────────────────────────────
+app.include_router(api_v1_router)
+app.include_router(oauth_router)
 
 
 # ---------- helpers ----------
@@ -805,6 +872,571 @@ async def api_toggle_alarm(client_id: str, authorization: str = Header(None)):
         return {"alarm": _alarm_to_response(client_id, data, now), "message": f"鬧鐘{status}"}
     finally:
         await db.close()
+
+
+# ─────────────────────────────────────────────
+# AI 帳號綁定 & Chat (BYOK - Bring Your Own Key)
+# ─────────────────────────────────────────────
+
+import json
+from cryptography.fernet import Fernet
+
+# 取得加密金鑰（32 bytes hex → 44 bytes base64）
+_AI_KEY_ENCRYPTION_SECRET = os.environ.get("AI_KEY_ENCRYPTION_SECRET", "")
+if not _AI_KEY_ENCRYPTION_SECRET:
+    raise RuntimeError("AI_KEY_ENCRYPTION_SECRET environment variable is required")
+try:
+    # 將 hex 轉為 bytes，再轉成 base64 給 Fernet
+    import base64
+    _secret_bytes = bytes.fromhex(_AI_KEY_ENCRYPTION_SECRET)
+    if len(_secret_bytes) != 32:
+        raise ValueError("Secret must be exactly 32 bytes (64 hex chars)")
+    # Fernet 需要 32 bytes 的金鑰，用 base64 編碼
+    _cipher_key = base64.urlsafe_b64encode(_secret_bytes)
+    _cipher = Fernet(_cipher_key)
+except Exception as e:
+    raise RuntimeError(f"Failed to initialize encryption cipher: {e}")
+
+
+def _encrypt_api_key(plain_key: str) -> str:
+    """加密 API key（回傳 base64 encoded token）"""
+    return _cipher.encrypt(plain_key.encode()).decode()
+
+
+def _decrypt_api_key(encrypted: str) -> str:
+    """解密 API key"""
+    return _cipher.decrypt(encrypted.encode()).decode()
+
+
+def _preview_api_key(api_key: str) -> str:
+    """顯示 key 的預覽（末 4 碼）"""
+    if len(api_key) <= 4:
+        return api_key
+    return f"{api_key[:10]}...{api_key[-4:]}"
+
+
+class AiKeyBindRequest(BaseModel):
+    provider: str  # 'groq' | 'openai' | 'anthropic' | 'gemini'
+    api_key: str
+
+
+async def _validate_ai_key(provider: str, api_key: str) -> bool:
+    """驗證 API key 是否有效（做一次小測試呼叫）"""
+    try:
+        if provider == "groq":
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+            # 嘗試列出模型
+            models = client.models.list()
+            return True
+        elif provider == "openai":
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            models = client.models.list()
+            return True
+        elif provider == "anthropic":
+            from anthropic import Anthropic
+            client = Anthropic(api_key=api_key)
+            # Anthropic 無 list models 端點，就簡單驗證 client 建立
+            return True
+        elif provider == "gemini":
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            # 嘗試獲取模型列表
+            genai.list_tuned_models()
+            return True
+    except Exception as e:
+        print(f"[AI Key Validation] {provider} key validation failed: {e}")
+        return False
+    return False
+
+
+@app.post("/ai-key/bind", summary="綁定 AI API key", tags=["AI BYOK"])
+async def bind_ai_key(req: AiKeyBindRequest, authorization: str = Header(None)):
+    """
+    綁定使用者的 AI 服務 API key。
+    - 驗證 key 有效性
+    - 加密後儲存在資料庫
+    """
+    user_id = _require_auth(authorization)
+    provider = req.provider.lower().strip()
+    api_key = req.api_key.strip()
+
+    if not api_key:
+        raise HTTPException(400, "API key cannot be empty")
+    if provider not in ["groq", "openai", "anthropic", "gemini"]:
+        raise HTTPException(400, "Unsupported provider. Choose from: groq, openai, anthropic, gemini")
+
+    # 驗證 key
+    if not await _validate_ai_key(provider, api_key):
+        raise HTTPException(400, f"Invalid {provider} API key. Please check and try again.")
+
+    # 加密並儲存
+    encrypted_key = _encrypt_api_key(api_key)
+    db = await get_db()
+    try:
+        # UPSERT
+        await db.execute(
+            "INSERT INTO user_ai_keys (user_id, provider, api_key_encrypted) VALUES (?,?,?) "
+            "ON CONFLICT(user_id, provider) DO UPDATE SET api_key_encrypted=?, updated_at=datetime('now')",
+            (user_id, provider, encrypted_key, encrypted_key)
+        )
+        await db.commit()
+        return {
+            "success": True,
+            "provider": provider,
+            "key_preview": _preview_api_key(api_key)
+        }
+    finally:
+        await db.close()
+
+
+@app.get("/ai-key/status", summary="查詢綁定狀態", tags=["AI BYOK"])
+async def get_ai_key_status(authorization: str = Header(None)):
+    """取得使用者已綁定的 AI 服務列表（僅顯示 preview，不顯示完整 key）"""
+    user_id = _require_auth(authorization)
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT provider, api_key_encrypted FROM user_ai_keys WHERE user_id=?",
+            (user_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+
+        bindings = []
+        for row in rows:
+            try:
+                decrypted_key = _decrypt_api_key(row["api_key_encrypted"])
+                bindings.append({
+                    "provider": row["provider"],
+                    "key_preview": _preview_api_key(decrypted_key)
+                })
+            except Exception:
+                # Key 解密失敗（可能是金鑰不一致）
+                pass
+
+        return {"bindings": bindings}
+    finally:
+        await db.close()
+
+
+@app.delete("/ai-key/{provider}", summary="解除 AI 綁定", tags=["AI BYOK"])
+async def unbind_ai_key(provider: str, authorization: str = Header(None)):
+    """解除特定 AI 服務的綁定"""
+    user_id = _require_auth(authorization)
+    provider = provider.lower().strip()
+
+    if provider not in ["groq", "openai", "anthropic", "gemini"]:
+        raise HTTPException(400, "Invalid provider")
+
+    db = await get_db()
+    try:
+        await db.execute(
+            "DELETE FROM user_ai_keys WHERE user_id=? AND provider=?",
+            (user_id, provider)
+        )
+        await db.commit()
+        return {"success": True, "message": f"{provider} binding removed"}
+    finally:
+        await db.close()
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+async def _call_ai_service(provider: str, api_key: str, user_alarms: list, user_message: str) -> dict:
+    """
+    根據服務商呼叫不同的 AI 介面。
+    回傳 { "tool_name": "create_alarm" | "delete_alarm" | "list_alarms", "params": {...}, "reply": "..." }
+    """
+
+    # 共用的 tool 定義
+    alarm_tools_openai_format = [
+        {
+            "type": "function",
+            "function": {
+                "name": "create_alarm",
+                "description": "建立新鬧鐘。當使用者說『叫我』、『提醒我』、『設定鬧鐘』時使用。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "鬧鐘標題"},
+                        "hour": {"type": "integer", "description": "小時 0-23"},
+                        "minute": {"type": "integer", "description": "分鐘 0-59"},
+                        "is_recurring": {"type": "boolean", "description": "是否重複", "default": False},
+                        "repeat_days": {
+                            "type": "array",
+                            "items": {"type": "integer", "enum": [1,2,3,4,5,6,7]},
+                            "description": "重複日：1=週一...7=週日",
+                            "default": []
+                        }
+                    },
+                    "required": ["title", "hour", "minute"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_alarm",
+                "description": "刪除鬧鐘。當使用者說『取消鬧鐘』、『刪除X點的鬧鐘』時使用。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "client_id": {"type": "string", "description": "鬧鐘的 client_id（若已知）"},
+                        "hour": {"type": "integer", "description": "若不知 client_id，用時間比對"},
+                        "minute": {"type": "integer", "description": "分鐘"}
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_alarms",
+                "description": "列出所有鬧鐘。當使用者問『我有哪些鬧鐘』時使用。",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        }
+    ]
+
+    alarm_tools_anthropic_format = [
+        {
+            "name": "create_alarm",
+            "description": "建立新鬧鐘。當使用者說『叫我』、『提醒我』、『設定鬧鐘』時使用。",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "鬧鐘標題"},
+                    "hour": {"type": "integer", "description": "小時 0-23"},
+                    "minute": {"type": "integer", "description": "分鐘 0-59"},
+                    "is_recurring": {"type": "boolean", "description": "是否重複", "default": False},
+                    "repeat_days": {
+                        "type": "array",
+                        "items": {"type": "integer", "enum": [1,2,3,4,5,6,7]},
+                        "description": "重複日：1=週一...7=週日",
+                        "default": []
+                    }
+                },
+                "required": ["title", "hour", "minute"]
+            }
+        },
+        {
+            "name": "delete_alarm",
+            "description": "刪除鬧鐘。當使用者說『取消鬧鐘』、『刪除X點的鬧鐘』時使用。",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "string", "description": "鬧鐘的 client_id（若已知）"},
+                    "hour": {"type": "integer", "description": "若不知 client_id，用時間比對"},
+                    "minute": {"type": "integer", "description": "分鐘"}
+                }
+            }
+        },
+        {
+            "name": "list_alarms",
+            "description": "列出所有鬧鐘。當使用者問『我有哪些鬧鐘』時使用。",
+            "input_schema": {"type": "object", "properties": {}}
+        }
+    ]
+
+    alarms_context = "\n".join([
+        f"- {a['title']} @ {a['time_label']} (client_id: {a['client_id']})"
+        for a in user_alarms
+    ]) if user_alarms else "（無鬧鐘）"
+
+    system_prompt = f"""你是一個 AI 鬧鐘助理。
+使用者目前的鬧鐘列表：
+{alarms_context}
+
+當使用者要求與鬧鐘相關的操作時，總是使用提供的 tools 來執行。
+回覆簡短、友善的中文訊息。"""
+
+    try:
+        if provider == "groq":
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+            response = client.chat.completions.create(
+                model="mixtral-8x7b-32768",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                tools=alarm_tools_openai_format,
+                tool_choice="required"
+            )
+
+            tool_call = response.choices[0].message.tool_calls[0]
+            tool_name = tool_call.function.name
+            tool_params = json.loads(tool_call.function.arguments)
+
+            return {
+                "tool_name": tool_name,
+                "params": tool_params,
+                "reply": "已執行您的請求"
+            }
+
+        elif provider == "openai":
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                tools=alarm_tools_openai_format,
+                tool_choice="required"
+            )
+
+            tool_call = response.choices[0].message.tool_calls[0]
+            tool_name = tool_call.function.name
+            tool_params = json.loads(tool_call.function.arguments)
+
+            return {
+                "tool_name": tool_name,
+                "params": tool_params,
+                "reply": "已執行您的請求"
+            }
+
+        elif provider == "anthropic":
+            from anthropic import Anthropic
+            client = Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                system=system_prompt,
+                tools=alarm_tools_anthropic_format,
+                tool_choice={"type": "any"},
+                messages=[{"role": "user", "content": user_message}]
+            )
+
+            tool_use = None
+            text_reply = ""
+            for block in response.content:
+                if block.type == "tool_use":
+                    tool_use = block
+                elif block.type == "text":
+                    text_reply = block.text
+
+            if not tool_use:
+                raise ValueError("Anthropic did not return a tool call")
+
+            return {
+                "tool_name": tool_use.name,
+                "params": tool_use.input,
+                "reply": text_reply or "已執行您的請求"
+            }
+
+        elif provider == "gemini":
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+
+            alarm_tools_gemini = [
+                {
+                    "name": "create_alarm",
+                    "description": "建立新鬧鐘。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "hour": {"type": "integer"},
+                            "minute": {"type": "integer"},
+                            "is_recurring": {"type": "boolean", "default": False},
+                            "repeat_days": {"type": "array", "items": {"type": "integer"}, "default": []}
+                        },
+                        "required": ["title", "hour", "minute"]
+                    }
+                },
+                {
+                    "name": "delete_alarm",
+                    "description": "刪除鬧鐘。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "client_id": {"type": "string"},
+                            "hour": {"type": "integer"},
+                            "minute": {"type": "integer"}
+                        }
+                    }
+                },
+                {
+                    "name": "list_alarms",
+                    "description": "列出所有鬧鐘。",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            ]
+
+            model = genai.GenerativeModel(
+                "gemini-2.5-flash",
+                tools=alarm_tools_gemini,
+                system_instruction=system_prompt
+            )
+
+            response = model.generate_content(user_message)
+
+            # Gemini 的 function calling 結構不同
+            if response.candidates and response.candidates[0].content.parts:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, "function_call"):
+                        return {
+                            "tool_name": part.function_call.name,
+                            "params": part.function_call.args if hasattr(part.function_call, 'args') else {},
+                            "reply": "已執行您的請求"
+                        }
+
+            raise ValueError("Gemini did not return a function call")
+
+    except Exception as e:
+        print(f"[AI Service Error] {provider}: {e}")
+        raise HTTPException(500, f"AI service error: {str(e)}")
+
+
+@app.post("/chat", summary="AI 鬧鐘助手對話", tags=["AI Chat"])
+async def chat_with_ai(req: ChatRequest, authorization: str = Header(None)):
+    """
+    與 AI 對話管理鬧鐘。使用者綁定的 AI service 會解析自然語言，
+    自動建立/刪除/列出鬧鐘。
+    """
+    user_id = _require_auth(authorization)
+
+    # 查詢使用者綁定的 AI service
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT provider, api_key_encrypted FROM user_ai_keys WHERE user_id=? LIMIT 1",
+            (user_id,)
+        ) as cur:
+            ai_binding = await cur.fetchone()
+
+        if not ai_binding:
+            raise HTTPException(400, "No AI service bound. Please bind an AI service first.")
+
+        provider = ai_binding["provider"]
+        try:
+            api_key = _decrypt_api_key(ai_binding["api_key_encrypted"])
+        except Exception:
+            raise HTTPException(500, "Failed to decrypt API key")
+
+        # 讀取使用者現有鬧鐘作為上下文
+        async with db.execute(
+            "SELECT client_id, data, updated_at FROM synced_alarms WHERE user_id=? AND is_deleted=0",
+            (user_id,)
+        ) as cur:
+            alarm_rows = await cur.fetchall()
+
+        user_alarms = [
+            _alarm_to_response(r["client_id"], json.loads(r["data"]), r["updated_at"])
+            for r in alarm_rows
+        ]
+
+    finally:
+        await db.close()
+
+    # 呼叫 AI service
+    ai_result = await _call_ai_service(provider, api_key, user_alarms, req.message)
+
+    tool_name = ai_result["tool_name"]
+    tool_params = ai_result["params"]
+
+    # 執行 tool
+    if tool_name == "create_alarm":
+        # 新增鬧鐘
+        client_id = str(uuid.uuid4())
+        now = int(_time.time() * 1000)
+        data = {
+            "title": tool_params.get("title", "鬧鐘"),
+            "hour": tool_params.get("hour", 7),
+            "minute": tool_params.get("minute", 0),
+            "isEnabled": True,
+            "repeatDays": tool_params.get("repeat_days", []),
+            "vibrateOnly": False,
+            "snoozeEnabled": True,
+            "alarmVolume": 80,
+            "clientId": client_id,
+            "updatedAt": now,
+        }
+
+        db = await get_db()
+        try:
+            await db.execute(
+                "INSERT INTO synced_alarms (user_id, client_id, data, updated_at, is_deleted) VALUES (?,?,?,?,0)",
+                (user_id, client_id, json.dumps(data, ensure_ascii=False), now)
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+        time_label = f"{data['hour']:02d}:{data['minute']:02d}"
+        reply = f"已為您設定 {time_label} 的鬧鐘『{data['title']}』"
+        if data["repeatDays"]:
+            days_cn = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "日"}
+            days_str = "、".join(days_cn.get(d, str(d)) for d in sorted(data["repeatDays"]))
+            reply += f"（每週 {days_str}）"
+
+        return {"reply": reply, "action": "create_alarm", "alarm": _alarm_to_response(client_id, data, now)}
+
+    elif tool_name == "delete_alarm":
+        # 刪除鬧鐘
+        client_id = tool_params.get("client_id")
+        hour = tool_params.get("hour")
+        minute = tool_params.get("minute")
+
+        db = await get_db()
+        try:
+            # 若沒有 client_id，用 hour+minute 查詢
+            if client_id:
+                async with db.execute(
+                    "SELECT client_id FROM synced_alarms WHERE user_id=? AND client_id=? AND is_deleted=0",
+                    (user_id, client_id)
+                ) as cur:
+                    row = await cur.fetchone()
+                if row:
+                    client_id = row["client_id"]
+                else:
+                    raise HTTPException(404, "鬧鐘不存在")
+            else:
+                # 按時間查詢
+                async with db.execute(
+                    "SELECT client_id, data FROM synced_alarms WHERE user_id=? AND is_deleted=0",
+                    (user_id,)
+                ) as cur:
+                    rows = await cur.fetchall()
+
+                for row in rows:
+                    data = json.loads(row["data"])
+                    if data.get("hour") == hour and data.get("minute") == minute:
+                        client_id = row["client_id"]
+                        break
+
+                if not client_id:
+                    raise HTTPException(404, "找不到該時間的鬧鐘")
+
+            now = int(_time.time() * 1000)
+            await db.execute(
+                "UPDATE synced_alarms SET is_deleted=1, updated_at=? WHERE user_id=? AND client_id=?",
+                (now, user_id, client_id)
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+        return {"reply": "已刪除該鬧鐘", "action": "delete_alarm", "client_id": client_id}
+
+    elif tool_name == "list_alarms":
+        # 列出鬧鐘
+        reply = "您目前的鬧鐘列表：\n"
+        if user_alarms:
+            for alarm in user_alarms:
+                reply += f"- {alarm['time_label']} 《{alarm['title']}》\n"
+        else:
+            reply = "您目前沒有設定任何鬧鐘。"
+
+        return {"reply": reply, "action": "list_alarms", "alarms": user_alarms}
+
+    else:
+        raise HTTPException(500, f"Unknown tool: {tool_name}")
 
 
 if __name__ == "__main__":
