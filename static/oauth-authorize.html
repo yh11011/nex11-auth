@@ -161,6 +161,7 @@
 </div>
 
 <script>
+const API = location.pathname === '/auth' || location.pathname.startsWith('/auth/') ? '/auth' : '';
 // ─── Injected server-side values ───────────────────────────────────────────
 const CLIENT_ID    = "__CLIENT_ID__";
 const CLIENT_NAME  = "__CLIENT_NAME__";
@@ -190,7 +191,7 @@ let userToken = null;
   const stored = localStorage.getItem("nexalarm_token");
   if (!stored) return;
   try {
-    const r = await fetch("/me", { headers: { Authorization: "Bearer " + stored } });
+    const r = await fetch(API + "/me", { headers: { Authorization: "Bearer " + stored } });
     if (!r.ok) return;
     const u = await r.json();
     userToken = stored;
@@ -219,7 +220,7 @@ async function handleAllow() {
       resetBtn(); return;
     }
     try {
-      const r = await fetch("/login", {
+      const r = await fetch(API + "/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username_or_email: username, password }),
@@ -239,7 +240,7 @@ async function handleAllow() {
 
   // Confirm authorization
   try {
-    const r = await fetch("/oauth/authorize", {
+    const r = await fetch(API + "/oauth/authorize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

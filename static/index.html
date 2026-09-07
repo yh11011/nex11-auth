@@ -288,7 +288,9 @@
 </div>
 
 <script>
-const API = '';  // same origin
+// Auth is deployed at the site root on login.nex11.me, but behind /auth on
+// alarm.nex11.me.  Keep requests under the same prefix as the rendered page.
+const API = location.pathname === '/auth' || location.pathname.startsWith('/auth/') ? '/auth' : '';
 const params = new URLSearchParams(location.search);
 const nextUrl = params.get('next') || '';
 
@@ -331,6 +333,16 @@ function showMsg(id, text, type) {
   el.className = 'msg ' + type;
 }
 
+async function readApiResponse(response, fallbackMessage) {
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(`服務暫時無法回應，請稍後再試（HTTP ${response.status}）`);
+  }
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || fallbackMessage);
+  return data;
+}
+
 async function doLogin() {
   const id = document.getElementById('login-id').value.trim();
   const pw = document.getElementById('login-pw').value;
@@ -342,8 +354,7 @@ async function doLogin() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({username_or_email: id, password: pw})
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || '登入失敗');
+    const data = await readApiResponse(r, '登入失敗');
     localStorage.setItem('nex11_token', data.access_token);
     localStorage.setItem('nex11_user', JSON.stringify(data.user));
     showMsg('login-msg', '登入成功，跳轉中...', 'success');
@@ -372,8 +383,7 @@ async function doRegister() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || '註冊失敗');
+    const data = await readApiResponse(r, '註冊失敗');
     // also save email separately if provided (optional enhancement)
     localStorage.setItem('nex11_token', data.access_token);
     localStorage.setItem('nex11_user', JSON.stringify(data.user));
