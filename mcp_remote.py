@@ -101,6 +101,9 @@ class AuthenticatedMCP:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope,receive,send)
+        # This catch-all mount must not challenge unrelated discovery or asset URLs.
+        if scope.get("path") not in {"/mcp", "/mcp/"}:
+            return await JSONResponse({"detail":"Not Found"}, status_code=404)(scope,receive,send)
         headers = dict(scope["headers"])
         auth = headers.get(b"authorization",b"").decode()
         db = await get_db()

@@ -111,7 +111,7 @@ class OAuthApproveRequest(BaseModel):
 
 # ─── Dynamic Client Registration ─────────────────────────────────────────────
 
-@router.post("/register", summary="動態客戶端註冊 (RFC 7591)")
+@router.post("/register", status_code=201, summary="動態客戶端註冊 (RFC 7591)")
 async def oauth_register(req: OAuthRegisterRequest, request: Request):
     """
     Registers a new OAuth client. Required by OpenAI for Custom GPT Actions.
@@ -148,15 +148,20 @@ async def oauth_register(req: OAuthRegisterRequest, request: Request):
     finally:
         await db.close()
 
-    return {
+    result = {
         "client_id":     client_id,
-        "client_secret": client_secret if secret_hash else None,
+        "client_id_issued_at": int(time.time()),
         "token_endpoint_auth_method": req.token_endpoint_auth_method,
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "client_name":   req.client_name,
         "redirect_uris": req.redirect_uris,
     }
+    # RFC 7591: omit optional credentials for public clients; null is not a secret.
+    if secret_hash:
+        result["client_secret"] = client_secret
+        result["client_secret_expires_at"] = 0
+    return result
 
 
 # ─── Authorization Endpoint ───────────────────────────────────────────────────

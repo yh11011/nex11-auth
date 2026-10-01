@@ -226,3 +226,31 @@ async def test_integrated_sync_hides_dates_from_legacy_apps(env, monkeypatch):
         assert newer.json()['alarms'][0]['data']['hour']==7
         assert (await client.get('/mcp-connect')).status_code==200
         assert (await client.get('/health')).json()=={'status':'ok'}
+
+
+@pytest.mark.asyncio
+async def test_public_client_registration_contract_and_missing_discovery(env):
+    response = await env.post('/oauth/register', json={
+        'redirect_uris': ['https://chatgpt.com/connector_platform_oauth_redirect'],
+        'client_name': 'ChatGPT', 'token_endpoint_auth_method': 'none',
+        'grant_types': ['authorization_code', 'refresh_token'], 'response_types': ['code'],
+    })
+    assert response.status_code == 201
+    registered = response.json()
+    assert registered['token_endpoint_auth_method'] == 'none'
+    assert 'client_secret' not in registered
+    assert isinstance(registered['client_id_issued_at'], int)
+    secret = await env.post('/oauth/register', json={
+        'redirect_uris': ['https://example.com/callback'],
+        'token_endpoint_auth_method': 'client_secret_post',
+    })
+    assert secret.status_code == 201
+    assert isinstance(secret.json()['client_secret'], str)
+    assert secret.json()['client_secret_expires_at'] == 0
+    for path in ('/.well-known/openid-configuration', '/favicon.ico', '/unknown'):
+        missing = await env.get(path)
+        assert missing.status_code == 404
+        assert 'www-authenticate' not in missing.headers
+    challenge = await env.post('/mcp', json={})
+    assert challenge.status_code == 401
+    assert 'resource_metadata=' in challenge.headers['www-authenticate']
