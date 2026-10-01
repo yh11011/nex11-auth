@@ -25,3 +25,9 @@ python -m pytest tests -q
 Tests isolate the database and mock FCM. They exercise real SDK initialization/tool discovery/calls, OAuth form/PKCE/replay/refresh/revoke, entitlement/scope/account isolation, concurrent idempotency, immutable snapshots, fallback, cancellation, superseded receipts and legacy date protection. Use `/health` and anonymous MCP/discovery requests for live smoke tests, never production account mutations.
 
 Android/AI-host end-to-end verification requires actual phones, FCM credentials and interactive OAuth consent in Codex/ChatGPT. Details and private-connection instructions live in the NexAlarm repository under `docs/mcp/`.
+
+## All-alarm scheduling evidence and updates
+
+Authenticated phones upload `/api/v1/devices/{id}/schedule-status` in batches of at most 20 records. The server validates account/device ownership, current cloud version and scheduling/cancellation consistency. `list_alarms` preserves existing fields and adds per-alarm device statuses, registered-device/active-cloud/enabled counts, per-device exact/fallback/unconfirmed counts and report times. No report, outdated versions or expired triggers are not scheduling confirmation. These attest Android scheduler submission, not future ringing. Registration records installed app version for diagnosis.
+
+`app_updates.py` exposes the public `/api/v1/app/releases/latest?channel=beta` independently of Premium. It caches GitHub metadata for five minutes and excludes drafts, the historical Debug release, absent metadata, invalid digest/package/version/size/source. Network failure returns 503 rather than claiming no update. No signed update metadata is published currently. Original signing-key recovery and Firebase sending credentials remain prerequisites for real compatible upgrades/push verification.

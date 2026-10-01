@@ -21,6 +21,12 @@ RESOURCE = BASE + "/mcp"
 router = APIRouter()
 
 SQL = """
+CREATE TABLE IF NOT EXISTS device_schedule_status (
+ device_id TEXT NOT NULL, client_id TEXT NOT NULL, version INTEGER NOT NULL,
+ status TEXT NOT NULL, trigger_at INTEGER, timezone TEXT NOT NULL,
+ reason TEXT, reported_at INTEGER NOT NULL, received_at INTEGER NOT NULL,
+ PRIMARY KEY(device_id, client_id)
+);
 CREATE TABLE IF NOT EXISTS ai_devices (
  device_id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
  name TEXT NOT NULL, fcm_token TEXT NOT NULL DEFAULT '', timezone TEXT NOT NULL,
@@ -54,6 +60,10 @@ async def init_ai_db():
             cols = await (await db.execute(f"PRAGMA table_info({table})")).fetchall()
             if "resource" not in {r["name"] for r in cols}:
                 await db.execute(f"ALTER TABLE {table} ADD COLUMN resource TEXT NOT NULL DEFAULT ''")
+        cols = {r['name'] for r in await (await db.execute('PRAGMA table_info(ai_devices)')).fetchall()}
+        for column, declaration in [('app_version', "TEXT NOT NULL DEFAULT ''"), ('app_version_code', 'INTEGER NOT NULL DEFAULT 0')]:
+            if column not in cols:
+                await db.execute(f'ALTER TABLE ai_devices ADD COLUMN {column} {declaration}')
         await db.commit()
     finally:
         await db.close()
@@ -225,6 +235,8 @@ class Device(BaseModel):
     fcm_token: str = Field(default="",max_length=4096)
     timezone: str = Field(min_length=1,max_length=100)
     capabilities: int = Field(default=2,ge=1,le=2)
+    app_version: str = Field(default="",max_length=100)
+    app_version_code: int = Field(default=0,ge=0)
 
 @router.post("/api/v1/devices/register")
 async def register_device(req: Device, authorization: str = Header(None)):
@@ -235,7 +247,9 @@ async def register_device(req: Device, authorization: str = Header(None)):
         old = await (await db.execute("SELECT user_id FROM ai_devices WHERE device_id=?",(req.device_id,))).fetchone()
         if old and old["user_id"] != uid:
             raise HTTPException(409,"Device belongs to another account; use a new registration ID")
-        await db.execute("INSERT INTO ai_devices VALUES (?,?,?,?,?,?,1,?) ON CONFLICT(device_id) DO UPDATE SET name=excluded.name,fcm_token=excluded.fcm_token,timezone=excluded.timezone,capabilities=excluded.capabilities,active=1,last_seen=excluded.last_seen",(req.device_id,uid,req.name,req.fcm_token,req.timezone,req.capabilities,int(time.time()*1000)))
+        await db.execute("INSERT INTO ai_devices(device_id,user_id,name,fcm_token,timezone,capabilities,active,last_seen) VALUES (?,?,?,?,?,?,1,?) ON CONFLICT(device_id) DO UPDATE SET name=excluded.name,fcm_token=excluded.fcm_token,timezone=excluded.timezone,capabilities=excluded.capabilities,active=1,last_seen=excluded.last_seen",(req.device_id,uid,req.name,req.fcm_token,req.timezone,req.capabilities,int(time.time()*1000)))
+        await db.commit()
+        await db.execute('UPDATE ai_devices SET app_version=?,app_version_code=? WHERE device_id=? AND user_id=?', (req.app_version,req.app_version_code,req.device_id,uid))
         await db.commit()
         return {"registered":True}
     finally:
@@ -338,3 +352,78 @@ async def connect_guide():
     from pathlib import Path
     from fastapi.responses import HTMLResponse
     return HTMLResponse((Path(__file__).parent / "static/mcp-connect.html").read_text())
+
+
+class ScheduleEntry(BaseModel):
+    client_id: str = Field(min_length=1,max_length=100)
+    version: int = Field(ge=0)
+    status: str
+    trigger_at: int | None = None
+    timezone: str = Field(min_length=1,max_length=100)
+    reason: str | None = Field(default=None,max_length=200)
+    reported_at: int = Field(gt=0)
+
+class ScheduleReport(BaseModel):
+    alarms: list[ScheduleEntry] = Field(max_length=20)
+
+@router.post('/api/v1/devices/{device_id}/schedule-status')
+async def schedule_report(device_id: str, req: ScheduleReport, authorization: str = Header(None)):
+    uid = await mobile_identity(authorization)
+    now = int(time.time()*1000)
+    db = await get_db()
+    accepted = 0
+    try:
+        await db.execute('BEGIN IMMEDIATE')
+        await require_device(db,uid,device_id)
+        for entry in req.alarms:
+            if entry.status not in {'scheduled','fallback','cancelled','failed','unknown'}:
+                raise HTTPException(400,'Invalid schedule status')
+            if entry.status in {'scheduled','fallback'} and (entry.trigger_at is None or entry.trigger_at <= 0):
+                raise HTTPException(400,'Scheduled status requires trigger_at')
+            alarm = await (await db.execute('SELECT data,updated_at,is_deleted FROM synced_alarms WHERE user_id=? AND client_id=?',(uid,entry.client_id))).fetchone()
+            if not alarm or alarm['updated_at'] != entry.version:
+                continue  # a later sync will report the current version
+            enabled = not alarm['is_deleted'] and json.loads(alarm['data']).get('isEnabled',True)
+            if (enabled and entry.status == 'cancelled') or (not enabled and entry.status in {'scheduled','fallback'}):
+                raise HTTPException(400,'Schedule status contradicts current alarm')
+            # Device clock changes must not prevent subsequent reports replacing old ones.
+            await db.execute('INSERT INTO device_schedule_status VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(device_id,client_id) DO UPDATE SET version=excluded.version,status=excluded.status,trigger_at=excluded.trigger_at,timezone=excluded.timezone,reason=excluded.reason,reported_at=excluded.reported_at,received_at=excluded.received_at',
+                (device_id,entry.client_id,entry.version,entry.status,entry.trigger_at,entry.timezone,entry.reason,entry.reported_at,now))
+            accepted += 1
+        await db.commit()
+        return {'accepted':accepted,'ignored':len(req.alarms)-accepted}
+    finally:
+        await db.close()
+
+async def alarm_inventory(user_id):
+    now = int(time.time()*1000)
+    db = await get_db()
+    try:
+        alarms = await (await db.execute('SELECT client_id,data,updated_at FROM synced_alarms WHERE user_id=? AND is_deleted=0 ORDER BY updated_at DESC',(user_id,))).fetchall()
+        devices = await (await db.execute('SELECT device_id,name,timezone,last_seen,app_version,app_version_code FROM ai_devices WHERE user_id=? AND active=1',(user_id,))).fetchall()
+        reports = await (await db.execute('SELECT s.* FROM device_schedule_status s JOIN ai_devices d USING(device_id) WHERE d.user_id=? AND d.active=1',(user_id,))).fetchall()
+        indexed = {(r['device_id'],r['client_id']):dict(r) for r in reports}
+        output = []
+        summaries = [dict(d,scheduled_count=0,fallback_count=0,unconfirmed_count=0,last_report_at=None) for d in devices]
+        for alarm in alarms:
+            data = json.loads(alarm['data']); outcomes = []
+            for device in summaries:
+                report = indexed.get((device['device_id'],alarm['client_id']))
+                outcome = {'device_id':device['device_id'],'status':'unknown','reported_at':None}
+                if report:
+                    outcome.update({k:report[k] for k in ('status','trigger_at','timezone','reason','reported_at','received_at')})
+                    device['last_report_at'] = max(device['last_report_at'] or 0,report['received_at'])
+                    if report['version'] != alarm['updated_at']: outcome['status'] = 'unknown'
+                    elif outcome['status'] in {'scheduled','fallback'} and (not data.get('isEnabled',True) or (outcome['trigger_at'] or 0) <= now): outcome['status'] = 'expired'
+                if data.get('isEnabled',True):
+                    key = 'scheduled_count' if outcome['status']=='scheduled' else 'fallback_count' if outcome['status']=='fallback' else 'unconfirmed_count'
+                    device[key] += 1
+                outcomes.append(outcome)
+            output.append({'client_id':alarm['client_id'],'data':data,'version':alarm['updated_at'],'device_statuses':outcomes})
+        return {'alarms':output,'devices':summaries,'summary':{'registered_device_count':len(devices),'cloud_alarm_count':len(output),'enabled_alarm_count':sum(a['data'].get('isEnabled',True) for a in output)},'schedule_evidence':'Last device report of submission to Android scheduler; does not guarantee future ringing.'}
+    finally:
+        await db.close()
+
+# Public app updates are available independently of Premium and account login.
+from app_updates import router as updates_router
+router.include_router(updates_router)

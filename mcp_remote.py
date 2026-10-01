@@ -13,7 +13,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.responses import JSONResponse
 
-from ai_delivery import BASE, RESOURCE, identity, mutate, wait_status, status
+from ai_delivery import BASE, RESOURCE, identity, mutate, wait_status, status, alarm_inventory
 from database import get_db
 
 router = APIRouter()
@@ -48,21 +48,16 @@ async def uid(scope):
 
 @mcp.tool(**tool_options("alarm:read"))
 async def list_alarms() -> dict[str, Any]:
-    """List alarms with complete client IDs, single dates, and repeat weekdays."""
+    """List cloud alarms (including phone-created alarms), device count and per-phone scheduling evidence. Unknown means no current confirmation, not zero local alarms."""
     user_id = await uid("alarm:read")
-    db = await get_db()
-    try:
-        rows = await (await db.execute("SELECT client_id,data,updated_at FROM synced_alarms WHERE user_id=? AND is_deleted=0 ORDER BY updated_at DESC",(user_id,))).fetchall()
-        devices = await (await db.execute("SELECT name,timezone FROM ai_devices WHERE user_id=? AND active=1",(user_id,))).fetchall()
-        clocks = []
-        for device in devices:
-            try:
-                clocks.append({"name":device["name"],"timezone":device["timezone"],"local_time":datetime.now(ZoneInfo(device["timezone"])).isoformat()})
-            except (ValueError, KeyError):
-                clocks.append({"name":device["name"],"timezone":device["timezone"]})
-        return {"alarms":[{"client_id":r["client_id"],"data":json.loads(r["data"]),"version":r["updated_at"]} for r in rows], "devices":clocks,"server_time":datetime.now(timezone.utc).isoformat()}
-    finally:
-        await db.close()
+    result = await alarm_inventory(user_id)
+    for device in result['devices']:
+        try:
+            device['local_time'] = datetime.now(ZoneInfo(device['timezone'])).isoformat()
+        except (ValueError, KeyError):
+            pass
+    result['server_time'] = datetime.now(timezone.utc).isoformat()
+    return result
 
 @mcp.tool(**tool_options("alarm:write",write=True))
 async def create_alarm(hour: Annotated[int,Field(ge=0,le=23)], minute: Annotated[int,Field(ge=0,le=59)],
