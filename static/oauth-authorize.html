@@ -130,7 +130,7 @@
     <img src="/static/logo.png" alt="NexAlarm" onerror="this.style.display='none'">
     <div>
       <div style="font-size:.75rem;color:#9ca3af;margin-bottom:2px">NexAlarm 授權請求</div>
-      <h1><span class="client-name" id="clientName">__CLIENT_NAME__</span><br>想要存取你的鬧鐘</h1>
+      <h1><span class="client-name" id="clientName">__CLIENT_NAME_HTML__</span><br>想要存取你的鬧鐘</h1>
     </div>
   </div>
 
@@ -163,8 +163,8 @@
 <script>
 const API = location.pathname === '/auth' || location.pathname.startsWith('/auth/') ? '/auth' : '';
 // ─── Injected server-side values ───────────────────────────────────────────
-const CLIENT_ID    = "__CLIENT_ID__";
-const CLIENT_NAME  = "__CLIENT_NAME__";
+const CLIENT_ID = decodeURIComponent("__CLIENT_ID__");
+const RESOURCE = decodeURIComponent("__RESOURCE__");
 const REDIRECT_URI = decodeURIComponent("__REDIRECT_URI_ENCODED__");
 const SCOPE        = "__SCOPE__";
 const STATE        = decodeURIComponent("__STATE_ENCODED__");
@@ -250,6 +250,7 @@ async function handleAllow() {
         state:                 encodeURIComponent(STATE),
         code_challenge:        CODE_CHALLENGE   || null,
         code_challenge_method: CODE_CHALLENGE_METHOD || null,
+        resource:              RESOURCE,
         token:                 userToken,
       }),
     });

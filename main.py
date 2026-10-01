@@ -19,6 +19,8 @@ from jwt_utils import encode_token, decode_token
 import rate_limiter as rl
 from api_v1 import router as api_v1_router
 from oauth_routes import router as oauth_router
+from ai_delivery import router as ai_router, init_ai_db
+from mcp_remote import router as mcp_metadata_router, remote_app, mcp
 
 # OAuth credentials (set in .env)
 GITHUB_CLIENT_ID     = os.environ.get("GITHUB_CLIENT_ID", "")
@@ -61,7 +63,9 @@ CORS_ORIGINS = list(dict.fromkeys(_env_origins + _AI_CORS_ORIGINS))  # deduplica
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    yield
+    await init_ai_db()
+    async with mcp.session_manager.run():
+        yield
 
 
 app = FastAPI(
@@ -81,7 +85,8 @@ app.add_middleware(
     allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "MCP-Protocol-Version", "Mcp-Session-Id", "Last-Event-ID"],
+    expose_headers=["Mcp-Session-Id", "WWW-Authenticate"],
 )
 
 # ─── Security middleware ──────────────────────────────────────────────────────
@@ -128,6 +133,8 @@ async def security_middleware(request: Request, call_next):
 # ─── Include routers ──────────────────────────────────────────────────────────
 app.include_router(api_v1_router)
 app.include_router(oauth_router)
+app.include_router(ai_router)
+app.include_router(mcp_metadata_router)
 
 
 # ---------- helpers ----------
@@ -368,6 +375,7 @@ class AlarmSyncItem(BaseModel):
 
 
 class AlarmSyncRequest(BaseModel):
+    capabilities: int = 1
     alarms: list[AlarmSyncItem]
 
 
@@ -397,7 +405,7 @@ async def get_alarms(authorization: str = Header(None)):
             rows = await cur.fetchall()
         return {"alarms": [
             {"client_id": r["client_id"], "data": r["data"], "updated_at": r["updated_at"]}
-            for r in rows
+            for r in rows if not json.loads(r["data"]).get("scheduledDate")
         ]}
     finally:
         await db.close()
@@ -418,7 +426,7 @@ async def sync_alarms(req: AlarmSyncRequest, authorization: str = Header(None)):
         for item in req.alarms:
             # 查詢伺服器現有版本
             async with db.execute(
-                "SELECT updated_at FROM synced_alarms WHERE user_id = ? AND client_id = ?",
+                "SELECT updated_at, data FROM synced_alarms WHERE user_id = ? AND client_id = ?",
                 (user_id, item.client_id)
             ) as cur:
                 existing = await cur.fetchone()
@@ -431,6 +439,8 @@ async def sync_alarms(req: AlarmSyncRequest, authorization: str = Header(None)):
                     "INSERT INTO synced_alarms (user_id, client_id, data, updated_at, is_deleted) VALUES (?,?,?,?,?)",
                     (user_id, item.client_id, data_json, item.updated_at, int(item.is_deleted))
                 )
+            elif req.capabilities < 2 and json.loads(existing["data"]).get("scheduledDate"):
+                continue  # old apps cannot edit dated alarms without losing their date
             elif item.updated_at > existing["updated_at"]:
                 # 客戶端比較新 → 覆蓋伺服器
                 await db.execute(
@@ -455,7 +465,7 @@ async def sync_alarms(req: AlarmSyncRequest, authorization: str = Header(None)):
                 "updated_at": r["updated_at"],
                 "is_deleted": bool(r["is_deleted"])
             }
-            for r in rows
+            for r in rows if req.capabilities >= 2 or not json.loads(r["data"]).get("scheduledDate")
         ]}
     finally:
         await db.close()
@@ -1443,3 +1453,6 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 9000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+
+# Keep the MCP mount last so existing account/API routes retain precedence.
+app.mount("/", remote_app)

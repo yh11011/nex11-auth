@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexAlarm AI 連接</title>
+<style>body{font-family:system-ui,sans-serif;background:#f5f7fb;color:#172033;margin:0;padding:24px}main{max-width:720px;margin:auto;background:white;padding:28px;border-radius:18px}h1{font-size:26px}h2{font-size:20px;margin-top:28px}p,li{line-height:1.7}pre{overflow:auto;background:#eef2f8;padding:16px;border-radius:8px}code{overflow-wrap:anywhere}a{color:#2459bc}input{box-sizing:border-box;width:100%;padding:12px;font:inherit;margin:8px 0}button,.action{display:inline-block;padding:12px 16px;border-radius:8px;border:0;background:#2459bc;color:white;font:inherit;cursor:pointer;text-decoration:none}label{display:block;margin:16px 0}</style></head>
+<body><main><h1>用 Codex／ChatGPT 訂 NexAlarm 鬧鐘</h1>
+<p>此功能限 NexAlarm Premium。先在所有要響鈴的手機安裝新版 App、登入同一個帳號並連網，再連接 AI 助手。你的密碼只輸入在 NexAlarm 登入與授權頁。</p>
+<p>MCP 網址：<code>https://login.nex11.me/mcp</code></p>
+<h2>Codex</h2><pre>codex mcp add nexalarm --url https://login.nex11.me/mcp
+codex mcp login nexalarm</pre><p>在瀏覽器登入 NexAlarm 並授權讀取與管理鬧鐘。完成後重新開啟對話，請 Codex 設定鬧鐘。</p>
+<h2>ChatGPT 私人連接</h2><p>不需要在 GPT Store 登錄或公開上架。若帳號與工作區允許自訂 MCP，先啟用 Developer mode，再在 Plugins 按「＋」新增連接，貼上下列欄位並選擇 OAuth。</p>
+<label>名稱<input id="plugin-name" readonly value="NexAlarm"><button type="button" data-copy="plugin-name">複製名稱</button></label>
+<label>MCP 網址<input id="plugin-url" readonly value="https://login.nex11.me/mcp"><button type="button" data-copy="plugin-url">複製網址</button></label>
+<label>說明<input id="plugin-description" readonly value="建立、修改與查詢 NexAlarm 鬧鐘，確認各手機的排程狀態。"><button type="button" data-copy="plugin-description">複製說明</button></label>
+<p><a class="action" href="https://chatgpt.com/plugins" target="_blank" rel="noopener noreferrer">開啟 ChatGPT Plugins</a></p>
+<p id="copy-status" role="status" aria-live="polite"></p>
+<p>此按鈕開啟 Plugins 頁面；目前 OpenAI 沒有公布可預填任意 MCP 名稱與網址的連結，因此仍需按「＋」並貼上欄位。建立後登入 NexAlarm 授權，即可在支援的對話中使用。</p>
+<p>若沒有自訂連接選項，請使用上方 Codex 指令。</p>
+<h2>試用指令</h2><ul><li>下週三早上七點叫我起床。</li><li>每週一到五七點半設定「上班」。</li><li>列出鬧鐘，關閉剛建立的上班鬧鐘。</li><li>查詢剛剛那個鬧鐘哪些手機已排程。</li></ul>
+<h2>確認手機收到</h2><p>同一鬧鐘依各手機當地時間響。AI 會列出已排程、非精確排程、待接收或失敗的手機；待接收不代表成功。離線、被強制停止或舊版手機無法保證即時收到，請開啟新版 App 再查詢。</p>
+<p>指定日期已過時會回報失敗，不會自動改到隔天。時區變更後以手機新時區排程。</p>
+<h2>解除授權</h2><p>在 NexAlarm 的設定 → AI 整合中解除指定助手授權，也可以從 AI 平台移除連接。已排程鬧鐘會繼續響。</p>
+<p><a href="https://learn.chatgpt.com/docs/extend/mcp?surface=cli">Codex 官方 MCP 文件</a> · <a href="https://developers.openai.com/plugins/quickstart">ChatGPT 官方連接文件</a></p>
+</main><script>
+document.querySelectorAll('[data-copy]').forEach(button => button.addEventListener('click', async () => {
+  const field = document.getElementById(button.dataset.copy);
+  const status = document.getElementById('copy-status');
+  try { await navigator.clipboard.writeText(field.value); status.textContent = '已複製，請到 ChatGPT 貼上。'; }
+  catch { field.focus(); field.select(); status.textContent = '請長按或使用複製快捷鍵複製已選取的文字。'; }
+}));
+</script></body></html>
