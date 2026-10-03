@@ -129,8 +129,8 @@
   <div class="logo-row">
     <img src="/static/logo.png" alt="NexAlarm" onerror="this.style.display='none'">
     <div>
-      <div style="font-size:.75rem;color:#9ca3af;margin-bottom:2px">NexAlarm 授權請求</div>
-      <h1><span class="client-name" id="clientName">__CLIENT_NAME_HTML__</span><br>想要存取你的鬧鐘</h1>
+      <div style="font-size:.75rem;color:#9ca3af;margin-bottom:2px">__SERVICE__ 授權請求</div>
+      <h1><span class="client-name" id="clientName">__CLIENT_NAME_HTML__</span><br>想要存取你的__DATA_LABEL__</h1>
     </div>
   </div>
 
@@ -173,6 +173,8 @@ const CODE_CHALLENGE_METHOD = "__CODE_CHALLENGE_METHOD__";
 
 // ─── Scope display ─────────────────────────────────────────────────────────
 const SCOPE_LABELS = {
+  "study:read": "讀取你有權限的題庫、教材、CTF、筆記與學習紀錄",
+  "study:summary:write": "新增你的對話學習摘要",
   "alarm:read":  "讀取你的鬧鐘清單",
   "alarm:write": "新增、修改、刪除你的鬧鐘",
 };

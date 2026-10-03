@@ -4,6 +4,7 @@ Exposes CRUD endpoints for alarms and folders.
 Accepts both JWT Bearer tokens (existing) and OAuth access tokens (nxai_…).
 """
 import hashlib
+import os
 import json
 import time
 import uuid
@@ -14,6 +15,8 @@ from pydantic import BaseModel
 from database import get_db
 from jwt_utils import decode_token
 from rate_limiter import check_token_rate
+
+ALARM_RESOURCE = os.environ.get("BASE_URL", "https://login.nex11.me").rstrip("/") + "/mcp"
 
 router = APIRouter(prefix="/api/v1", tags=["API v1"])
 
@@ -42,8 +45,8 @@ async def _resolve_token(authorization: str | None) -> tuple[int, str]:
         try:
             async with db.execute(
                 "SELECT user_id, scope FROM oauth_tokens "
-                "WHERE token_hash=? AND revoked=0 AND expires_at>?",
-                (token_hash, now_ms)
+                "WHERE token_hash=? AND revoked=0 AND expires_at>? AND (resource='' OR resource=?)",
+                (token_hash, now_ms, ALARM_RESOURCE)
             ) as cur:
                 row = await cur.fetchone()
             if not row:
@@ -81,8 +84,8 @@ async def _resolve_token_with_scope(authorization: str | None, required: str) ->
         try:
             async with db.execute(
                 "SELECT user_id, scope FROM oauth_tokens "
-                "WHERE token_hash=? AND revoked=0 AND expires_at>?",
-                (token_hash, now_ms)
+                "WHERE token_hash=? AND revoked=0 AND expires_at>? AND (resource='' OR resource=?)",
+                (token_hash, now_ms, ALARM_RESOURCE)
             ) as cur:
                 row = await cur.fetchone()
             if not row:

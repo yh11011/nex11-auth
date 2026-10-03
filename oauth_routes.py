@@ -10,13 +10,14 @@ import hmac
 import re
 import json
 import secrets
+import os
 import time
 import urllib.parse
 from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from database import get_db
 from jwt_utils import decode_token
@@ -25,7 +26,10 @@ from ai_delivery import BASE, RESOURCE, premium
 
 router = APIRouter(prefix="/oauth", tags=["OAuth 2.0"])
 
-VALID_SCOPES = {"alarm:read", "alarm:write"}
+STUDY_RESOURCE = "https://nex11.me/study/mcp"
+RESOURCE_SCOPES = {RESOURCE: {"alarm:read", "alarm:write"},
+                   STUDY_RESOURCE: {"study:read", "study:summary:write"}}
+VALID_SCOPES = set().union(*RESOURCE_SCOPES.values())
 
 
 # ─── Crypto helpers ───────────────────────────────────────────────────────────
@@ -203,6 +207,8 @@ async def oauth_authorize_page(
     page = (Path(__file__).parent / "static" / "oauth-authorize.html").read_text(encoding="utf-8")
     # Server-side substitution so values are always correct even if JS params differ
     page = (page
+        .replace("__SERVICE__", "Study" if resource == STUDY_RESOURCE else "NexAlarm")
+        .replace("__DATA_LABEL__", "學習資料" if resource == STUDY_RESOURCE else "鬧鐘")
         .replace("__CLIENT_ID__",             urllib.parse.quote(client_id, safe=""))
         .replace("__CLIENT_NAME_HTML__", html.escape(client["client_name"]))
         .replace("__CLIENT_NAME__", html.escape(client["client_name"], quote=True))
@@ -238,7 +244,7 @@ async def oauth_authorize_confirm(req: OAuthApproveRequest, request: Request):
         raise HTTPException(400, "Invalid redirect_uri")
 
     validate_authorization(req.scope, req.code_challenge or "", req.code_challenge_method or "", req.resource)
-    if req.resource:
+    if req.resource == RESOURCE:
         await premium(user_id)
     # Generate single-use auth code (valid 10 minutes)
     raw_code  = secrets.token_urlsafe(32)
@@ -303,7 +309,7 @@ async def oauth_token(request: Request):
             await db.execute("UPDATE oauth_tokens SET revoked=1 WHERE token_hash=?",(row["access_hash"],))
         else:
             raise HTTPException(400,"unsupported_grant_type")
-        if req.resource:
+        if req.resource == RESOURCE:
             user = await (await db.execute("SELECT is_premium FROM users WHERE id=?",(row["user_id"],))).fetchone()
             if not user or not user["is_premium"]:
                 raise HTTPException(403,"Premium required for AI integration")
@@ -353,8 +359,11 @@ async def oauth_revoke(request: Request):
 def validate_authorization(scope, challenge, method, resource):
     if not set(scope.split()).issubset(VALID_SCOPES) or not scope.strip():
         raise HTTPException(400,"Invalid scope")
-    if resource and resource != RESOURCE:
+    if resource and resource not in RESOURCE_SCOPES:
         raise HTTPException(400,"invalid_target")
+    allowed = RESOURCE_SCOPES.get(resource, RESOURCE_SCOPES[RESOURCE])
+    if not set(scope.split()).issubset(allowed):
+        raise HTTPException(400,"Scope does not belong to resource")
     if resource and (method != "S256" or not re.fullmatch(r"[A-Za-z0-9_-]{43}",challenge)):
         raise HTTPException(400,"PKCE S256 required")
     if challenge and (method != "S256" or not re.fullmatch(r"[A-Za-z0-9_-]{43}",challenge)):
@@ -372,3 +381,29 @@ def redirect_matches(uri, registered):
         if (item.scheme,item.hostname,item.path,item.query,item.fragment)==(target.scheme,target.hostname,target.path,target.query,target.fragment):
             return True  # native loopback client may choose an ephemeral port
     return False
+
+
+class StudyIntrospection(BaseModel):
+    token: str = Field(min_length=1, max_length=4096)
+
+@router.post("/introspect-study", include_in_schema=False)
+async def introspect_study(body: StudyIntrospection, request: Request, authorization: str = Header(default="")):
+    """Only the loopback Study service can introspect Study-bound tokens."""
+    from jose import jwt, JWTError
+    try:
+        if request.client.host not in {"127.0.0.1", "::1"} or not authorization.startswith("Bearer "):
+            raise ValueError()
+        claims = jwt.decode(authorization[7:], os.environ["JWT_SECRET_KEY"], algorithms=["HS256"],
+                            audience="study-introspection", options={"require_exp":True, "require_iat":True})
+        if claims.get("token_hash") != _sha256_hex(body.token) or not 0 <= int(time.time()) - claims["iat"] <= 30:
+            raise ValueError()
+    except (JWTError, ValueError, KeyError, TypeError):
+        raise HTTPException(401, "Service authentication required")
+    db = await get_db()
+    try:
+        row = await (await db.execute("SELECT t.user_id,t.scope,t.expires_at FROM oauth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=? AND t.resource=? AND t.revoked=0 AND t.expires_at>?",
+            (_sha256_hex(body.token),STUDY_RESOURCE,int(time.time()*1000)))).fetchone()
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"active":False} if not row else {"active":True,"sub":str(row["user_id"]),"scope":row["scope"],"resource":STUDY_RESOURCE,"exp":row["expires_at"]//1000}, headers={"Cache-Control":"no-store"})
+    finally:
+        await db.close()
