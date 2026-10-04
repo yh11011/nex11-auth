@@ -28,7 +28,7 @@ router = APIRouter(prefix="/oauth", tags=["OAuth 2.0"])
 
 STUDY_RESOURCE = "https://nex11.me/study/mcp"
 RESOURCE_SCOPES = {RESOURCE: {"alarm:read", "alarm:write"},
-                   STUDY_RESOURCE: {"study:read", "study:summary:write"}}
+                   STUDY_RESOURCE: {"study:read", "study:summary:write", "study:notes:write"}}
 VALID_SCOPES = set().union(*RESOURCE_SCOPES.values())
 
 

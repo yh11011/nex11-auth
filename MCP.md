@@ -34,7 +34,7 @@ Authenticated phones upload `/api/v1/devices/{id}/schedule-status` in batches of
 
 ## Study resource
 
-Study 使用 `https://nex11.me/study/mcp`，權限為 `study:read` 與 `study:summary:write`。與鬧鐘 resource 分開，不要求 NexAlarm Premium；既有鬧鐘 Premium、scope 及舊版空 resource 權杖相容性保留。
+Study 使用 `https://nex11.me/study/mcp`，權限為 `study:read`、`study:summary:write` 與 `study:notes:write`（新增、修改、分類、連結、搬移、垃圾桶、恢復及遷移；既有連接需重新授權）。與鬧鐘 resource 分開，不要求 NexAlarm Premium；既有鬧鐘 Premium、scope 及舊版空 resource 權杖相容性保留。
 
 `/oauth/introspect-study` 僅接受 loopback 來源加上服務證明 JWT（audience `study-introspection`、30 秒有效、綁定待驗權杖 SHA256）。服務證明使用既有 JWT 環境金鑰，不對瀏覽器或 AI 提供。回應限 active、使用者 ID、scope、resource、到期時間；不回傳憑證或帳號私人欄位。權杖更新／撤銷即時反映於 Study 下一次請求。
 
